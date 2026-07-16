@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>柒音 · 碎片</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    font-family: 'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  }
+  canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    max-width: 100vw;
+    max-height: 100dvh;
+  }
+  #hint {
+    position: fixed; bottom: 10%; color: rgba(255,255,255,0.3);
+    font-size: 13px; letter-spacing: 2px; pointer-events: none;
+    transition: opacity 0.8s;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">方向键移动 · 收集五枚碎片</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const hint = document.getElementById('hint');
+
+const W = 480, H = 320;
+function resize() {
+  const s = Math.min(window.innerWidth/W, window.innerHeight/H, 2.5);
+  canvas.width = W; canvas.height = H;
+  canvas.style.width = (W*s)+'px'; canvas.style.height = (H*s)+'px';
+}
+resize(); window.addEventListener('resize', resize);
+
+// ── 碎片 ──
+const fragWords = ['光影','织梦','化身','定格','热爱'];
+const fragColors = ['#f0c060','#e890b0','#90b8f0','#70d8c0','#f08070'];
+let fragments = fragWords.map((w, i) => ({
+  word: w, color: fragColors[i],
+  x: 60 + i * 90 + (Math.random()-0.5)*30,
+  y: 80 + Math.random() * 160,
+  alive: true
+}));
+
+// ── 玩家 ──
+let player = { x: W/2, y: H/2, walkFrame: 0, dir: 0 };
+let particles = [];
+let collected = [];
+let phase = 'playing'; // playing | ending | done
+let endTimer = 0; let endPhase = 0;
+let endFrags = [];
+let pulse = 0;
+let firstMove = false;
+
+// ── 输入 ──
+const keys = {};
+let touchOn = false, tx = 0, ty = 0;
+window.addEventListener('keydown', e => { keys[e.key]=true; e.preventDefault(); });
+window.addEventListener('keyup',   e => { keys[e.key]=false; e.preventDefault(); });
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault(); touchOn = true;
+  const r = canvas.getBoundingClientRect();
+  tx = (e.touches[0].clientX-r.left)*(W/r.width);
+  ty = (e.touches[0].clientY-r.top)*(H/r.height);
+});
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  tx = (e.touches[0].clientX-r.left)*(W/r.width);
+  ty = (e.touches[0].clientY-r.top)*(H/r.height);
+});
+canvas.addEventListener('touchend', e => { e.preventDefault(); touchOn = false; });
+
+function spawnParticles(x, y, color, n) {
+  for (let i=0; i<n; i++) {
+    const a = Math.random()*Math.PI*2;
+    const sp = 0.5+Math.random()*2.5;
+    particles.push({ x,y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp, life:1, decay:0.015+Math.random()*0.04, color, size:1+Math.random()*2 });
+  }
+}
+
+// ── 绘制：灰色像素小人 ──
+function drawSprite(ctx, x, y, s, dir, wf) {
+  const ox = Math.round(x-s/2), oy = Math.round(y-s*0.6);
+  const bob = wf>0 ? Math.sin(wf*0.3)*1 : 0;
+  // 身体 — 灰色调
+  ctx.fillStyle = '#888';
+  ctx.fillRect(ox+3, oy+Math.floor(s*0.22), s-6, Math.floor(s*0.28)); // 脸
+  ctx.fillStyle = '#777';
+  ctx.fillRect(ox+1, oy+1, s-2, Math.floor(s*0.3));                    // 头发
+  ctx.fillRect(ox+0, oy+Math.floor(s*0.28), 3, Math.floor(s*0.12));
+  ctx.fillRect(ox+s-3, oy+Math.floor(s*0.28), 3, Math.floor(s*0.12));
+  ctx.fillStyle = '#666';
+  ctx.fillRect(ox+2, oy+Math.floor(s*0.5), s-4, Math.floor(s*0.2));    // 上衣
+  ctx.fillRect(ox+1, oy+Math.floor(s*0.68), s-2, Math.floor(s*0.1));   // 裙摆
+  ctx.fillStyle = '#555';
+  ctx.fillRect(ox+4, oy+Math.floor(s*0.76)+bob, 3, Math.floor(s*0.18)); // 腿
+  ctx.fillRect(ox+s-7, oy+Math.floor(s*0.76)-bob, 3, Math.floor(s*0.18));
+  ctx.fillStyle = '#333';
+  ctx.fillRect(ox+5, oy+Math.floor(s*0.3), 2, 2);                      // 眼睛
+  ctx.fillRect(ox+s-7, oy+Math.floor(s*0.3), 2, 2);
+}
+
+// ── 绘制：发光碎片 ──
+function drawFrag(ctx, x, y, s, color, p) {
+  const glow = s*(1.2+0.2*Math.sin(p*0.04));
+  ctx.fillStyle = color+'44'; ctx.beginPath(); ctx.arc(x,y,glow*1.5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = color+'88'; ctx.beginPath(); ctx.arc(x,y,glow,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.moveTo(x,y-s*0.7); ctx.lineTo(x+s*0.5,y); ctx.lineTo(x,y+s*0.7); ctx.lineTo(x-s*0.5,y); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.fillRect(x-1,y-s*0.35,3,3);
+}
+
+// ── 终场 ──
+function easeOut(t) { return 1-Math.pow(1-t,3); }
+
+function updateEnd(dt) {
+  endTimer += dt;
+  if (endPhase===0) {
+    if (endTimer>0.6) { endPhase=1; endTimer=0; }
+  } else if (endPhase===1) {
+    for (const f of endFrags) {
+      f.progress = Math.min(1, f.progress+dt*0.7);
+      f.x = f.sx+(f.tx-f.sx)*easeOut(f.progress);
+      f.y = f.sy+(f.ty-f.sy)*easeOut(f.progress);
+    }
+    if (endTimer>2.0) { endPhase=2; endTimer=0; }
+  } else if (endPhase===2) {
+    if (endTimer>1.8) { endPhase=3; endTimer=0; }
+  } else if (endPhase===3) {
+    if (endTimer>1.2) { endPhase=4; endTimer=0; }
+  } else if (endPhase===4) {
+    if (endTimer>0.6) { endPhase=5; phase='done'; }
+  }
+}
+
+// ── 更新 ──
+function update(dt) {
+  if (phase==='done') return;
+  pulse += dt;
+
+  if (phase==='ending') { updateEnd(dt); return; }
+
+  let mx=0, my=0;
+  if (touchOn) {
+    const dx=tx-player.x, dy=ty-player.y;
+    const d = Math.hypot(dx,dy);
+    if (d>2) { mx=(dx/d)*Math.min(1,d/30); my=(dy/d)*Math.min(1,d/30); if(!firstMove){firstMove=true;hint.style.opacity='0';} }
+  }
+  if (keys['ArrowLeft']||keys['a']||keys['A']) { mx=-1; if(!firstMove){firstMove=true;hint.style.opacity='0';} }
+  if (keys['ArrowRight']||keys['d']||keys['D']){ mx=1;  if(!firstMove){firstMove=true;hint.style.opacity='0';} }
+  if (keys['ArrowUp']||keys['w']||keys['W'])   { my=-1; if(!firstMove){firstMove=true;hint.style.opacity='0';} }
+  if (keys['ArrowDown']||keys['s']||keys['S']) { my=1;  if(!firstMove){firstMove=true;hint.style.opacity='0';} }
+  if (mx&&my) { mx*=0.707; my*=0.707; }
+
+  const spd = 110;
+  player.x += mx*spd*dt;
+  player.y += my*spd*dt;
+  player.x = Math.max(12, Math.min(W-12, player.x));
+  player.y = Math.max(12, Math.min(H-12, player.y));
+
+  if (Math.abs(mx)>0.01||Math.abs(my)>0.01) {
+    player.dir = Math.atan2(my,mx);
+    player.walkFrame += dt*8;
+  } else { player.walkFrame = 0; }
+
+  // 收集检测
+  for (const f of fragments) {
+    if (!f.alive) continue;
+    if (Math.hypot(player.x-f.x, player.y-f.y) < 18) {
+      f.alive = false;
+      spawnParticles(f.x, f.y, f.color, 20);
+      collected.push(f);
+    }
+  }
+
+  // 集齐 5 枚 → 触发终场
+  if (collected.length>=5 && phase==='playing') {
+    phase='ending'; endTimer=0; endPhase=0;
+    endFrags = collected.map((f,i) => ({
+      ...f, sx:f.x, sy:f.y,
+      tx: W/2-60+i*30, ty: H/2-40, progress: 0
+    }));
+  }
+
+  // 粒子
+  for (let i=particles.length-1; i>=0; i--) {
+    const p=particles[i]; p.x+=p.vx; p.y+=p.vy; p.life-=p.decay;
+    if (p.life<=0) particles.splice(i,1);
+  }
+}
+
+// ── 绘制 ──
+function render(ctx) {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  if (phase==='done') {
+    // 最终画面
+    ctx.fillStyle = '#0a0a0f';
+    ctx.fillRect(0,0,W,H);
+    const cg=ctx.createRadialGradient(W/2,H/2-10,10,W/2,H/2-10,180);
+    cg.addColorStop(0,'rgba(180,160,220,0.12)'); cg.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=cg; ctx.beginPath(); ctx.arc(W/2,H/2-10,180,0,Math.PI*2); ctx.fill();
+    // 碎片排列
+    const tw = fragWords.length*52, sx = W/2-tw/2;
+    for (let i=0; i<fragWords.length; i++) {
+      const fx=sx+i*52+26, fy=H/2-50;
+      ctx.fillStyle=fragColors[i]+'40'; ctx.beginPath(); ctx.arc(fx,fy,18,0,Math.PI*2); ctx.fill();
+      const r=10; ctx.fillStyle=fragColors[i];
+      ctx.beginPath(); ctx.moveTo(fx,fy-r); ctx.lineTo(fx+r*0.7,fy); ctx.lineTo(fx,fy+r); ctx.lineTo(fx-r*0.7,fy); ctx.closePath(); ctx.fill();
+      ctx.fillStyle='#fffc'; ctx.font='12px "PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif'; ctx.textAlign='center';
+      ctx.fillText(fragWords[i],fx,fy+26);
+    }
+    ctx.strokeStyle='rgba(255,255,255,0.1)'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(W/2-80,H/2-2); ctx.lineTo(W/2+80,H/2-2); ctx.stroke();
+    // 两个小人
+    const cx1=W/2-14, cx2=W/2+14, cy=H/2+30;
+    drawTiny(ctx,cx1,cy,12,'#d5c0e8','柒音');
+    drawTiny(ctx,cx2,cy,12,'#c0d0e8','柒妖');
+    ctx.fillStyle='#ffffff99'; ctx.font='12px "PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif'; ctx.textAlign='center';
+    ctx.fillText('感谢你们用热爱创造的角色',W/2,H/2+72);
+    ctx.fillStyle='#ffffff44'; ctx.font='10px "PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif';
+    ctx.fillText('♥',W/2,H/2+98);
+    return;
+  }
+
+  // 碎片
+  for (const f of fragments) {
+    if (!f.alive) continue;
+    drawFrag(ctx, f.x, f.y, 16, f.color, pulse+f.x);
+    // 标签
+    ctx.fillStyle = f.color+'cc';
+    ctx.font = '10px "PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(f.word, f.x, f.y+18);
+  }
+
+  // 粒子
+  for (const p of particles) {
+    ctx.fillStyle = p.color+Math.floor(p.life*80).toString(16).padStart(2,'0');
+    ctx.fillRect(Math.round(p.x),Math.round(p.y),p.size,p.size);
+  }
+
+  // 终场飞行碎片
+  if (phase==='ending') {
+    for (const f of endFrags) {
+      if (f.progress>0) {
+        const sz=12;
+        ctx.fillStyle=f.color+'60'; ctx.beginPath(); ctx.arc(f.x,f.y,sz*1.5,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle=f.color;
+        ctx.beginPath(); ctx.moveTo(f.x,f.y-sz*0.7); ctx.lineTo(f.x+sz*0.5,f.y); ctx.lineTo(f.x,f.y+sz*0.7); ctx.lineTo(f.x-sz*0.5,f.y); ctx.closePath(); ctx.fill();
+      }
+    }
+  }
+
+  // 玩家
+  if (phase==='playing') drawSprite(ctx, player.x, player.y, 18, player.dir, player.walkFrame);
+
+  // 左下角收集计数
+  for (let i=0; i<5; i++) {
+    const fx=12+i*22, fy=H-14;
+    ctx.fillStyle = i<collected.length ? collected[i].color : '#333';
+    ctx.beginPath();
+    ctx.moveTo(fx,fy-6); ctx.lineTo(fx+5,fy); ctx.lineTo(fx,fy+6); ctx.lineTo(fx-5,fy); ctx.closePath();
+    ctx.fill();
+  }
+
+  // 闪光
+  if (phase==='ending' && endPhase===3) {
+    const a = Math.abs(Math.sin(endTimer*8))*0.35;
+    ctx.fillStyle = `rgba(255,255,255,${a})`;
+    ctx.fillRect(0,0,W,H);
+  }
+}
+
+function drawTiny(ctx, x, y, s, dress, name) {
+  const ox=Math.round(x-s/2), oy=Math.round(y-s*0.6);
+  ctx.fillStyle='#999'; ctx.fillRect(ox+1,oy,s-2,Math.floor(s*0.3));
+  ctx.fillStyle='#bbb'; ctx.fillRect(ox+2,oy+Math.floor(s*0.2),s-4,Math.floor(s*0.28));
+  ctx.fillStyle='#333'; ctx.fillRect(ox+3,oy+Math.floor(s*0.28),1,1); ctx.fillRect(ox+s-4,oy+Math.floor(s*0.28),1,1);
+  ctx.fillStyle=dress; ctx.fillRect(ox+1,oy+Math.floor(s*0.5),s-2,Math.floor(s*0.3));
+  ctx.fillStyle='#bbb'; ctx.fillRect(ox+3,oy+Math.floor(s*0.78),2,Math.floor(s*0.18)); ctx.fillRect(ox+s-5,oy+Math.floor(s*0.78),2,Math.floor(s*0.18));
+  ctx.fillStyle='#fffc'; ctx.font='9px "PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif'; ctx.textAlign='center';
+  ctx.fillText(name, x, y+s*0.45);
+}
+
+// ── 循环 ──
+let last = performance.now();
+function loop(t) {
+  let dt = (t-last)/1000; if (dt>0.1) dt=0.1; last=t;
+  update(dt); render(ctx);
+  requestAnimationFrame(loop);
+}
+resize(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
